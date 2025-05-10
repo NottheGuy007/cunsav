@@ -1,105 +1,46 @@
-import { getFirebaseAdmin } from "./firebase"
-import type { SavedContent, UserPlatformConnection, SyncLog, ReminderLog } from "./types"
-import { Timestamp, FieldValue } from "firebase-admin/firestore"
+import { Firestore } from "@google-cloud/firestore";
 
-const { db } = getFirebaseAdmin()
+// Initialize Firestore with service account credentials
+let db;
+try {
+  const credentials = process.env.GCP_CREDENTIALS
+    ? JSON.parse(process.env.GCP_CREDENTIALS)
+    : null;
 
-// Collections
-const savedContentCol = db.collection("saved_content")
-const userPlatformConnectionsCol = db.collection("user_platform_connections")
-const syncLogsCol = db.collection("sync_logs")
-const reminderLogsCol = db.collection("reminder_logs")
+  if (!credentials || !credentials.project_id) {
+    throw new Error("Invalid or missing GCP credentials: project_id is required");
+  }
 
-// SavedContent CRUD
-export async function createSavedContent(content: Omit<SavedContent, "id">) {
-  const docRef = savedContentCol.doc()
-  await docRef.set({
-    ...content,
-    saved_at: Timestamp.fromDate(content.saved_at),
-    reminder_time: content.reminder_time ? Timestamp.fromDate(content.reminder_time) : null,
-    created_at: FieldValue.serverTimestamp(),
-    updated_at: FieldValue.serverTimestamp(),
-  })
-  return docRef.id
+  if (process.env.GCP_PROJECT_ID && process.env.GCP_PROJECT_ID !== credentials.project_id) {
+    throw new Error("GCP_PROJECT_ID does not match credentials.project_id");
+  }
+
+  db = new Firestore({ credentials });
+} catch (error) {
+  console.error("Failed to initialize Firestore:", error);
+  throw new Error("Firestore credentials are not properly configured");
 }
 
-export async function getSavedContentByUser(userId: string) {
-  const snapshot = await savedContentCol.where("user_id", "==", userId).get()
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  })) as SavedContent[]
-}
+// Fetch saved content for a user
+export async function getSavedContentByUser(userId) {
+  // Skip execution during build if credentials are missing
+  if (
+    process.env.NODE_ENV === "production" &&
+    (!process.env.GCP_CREDENTIALS || !process.env.GCP_PROJECT_ID)
+  ) {
+    throw new Error("Skipping database query during build: GCP credentials or project ID not configured");
+  }
 
-export async function getSavedContentForReminders(currentTime: Date) {
-  const snapshot = await savedContentCol
-    .where("reminder_flag", "==", true)
-    .where("reminder_time", "<=", Timestamp.fromDate(currentTime))
-    .get()
-
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  })) as SavedContent[]
-}
-
-// UserPlatformConnection CRUD
-export async function saveUserPlatformConnection(connection: Omit<UserPlatformConnection, "id">) {
-  const docRef = userPlatformConnectionsCol.doc()
-  await docRef.set({
-    ...connection,
-    expires_at: Timestamp.fromDate(connection.expires_at),
-    last_sync: Timestamp.fromDate(connection.last_sync),
-    created_at: FieldValue.serverTimestamp(),
-    updated_at: FieldValue.serverTimestamp(),
-  })
-  return docRef.id
-}
-
-export async function getUserPlatformConnections(userId: string) {
-  const snapshot = await userPlatformConnectionsCol.where("user_id", "==", userId).where("is_active", "==", true).get()
-
-  return snapshot.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  })) as UserPlatformConnection[]
-}
-
-// SyncLog CRUD
-export async function createSyncLog(log: Omit<SyncLog, "id">) {
-  const docRef = syncLogsCol.doc()
-  await docRef.set({
-    ...log,
-    start_time: Timestamp.fromDate(log.start_time),
-    end_time: Timestamp.fromDate(log.end_time),
-    created_at: FieldValue.serverTimestamp(),
-  })
-  return docRef.id
-}
-
-// ReminderLog CRUD
-export async function createReminderLog(log: Omit<ReminderLog, "id">) {
-  const docRef = reminderLogsCol.doc()
-  await docRef.set({
-    ...log,
-    scheduled_time: Timestamp.fromDate(log.scheduled_time),
-    sent_time: log.sent_time ? Timestamp.fromDate(log.sent_time) : null,
-    created_at: FieldValue.serverTimestamp(),
-    updated_at: FieldValue.serverTimestamp(),
-  })
-  return docRef.id
-}
-
-export async function updateReminderLogStatus(
-  id: string,
-  status: "sent" | "failed",
-  sentTime?: Date,
-  errorMessage?: string,
-) {
-  await reminderLogsCol.doc(id).update({
-    status,
-    sent_time: sentTime ? Timestamp.fromDate(sentTime) : null,
-    error_message: errorMessage,
-    updated_at: FieldValue.serverTimestamp(),
-  })
+  try {
+    const collectionRef = db.collection("userContent").doc(userId).collection("content");
+    const snapshot = await collectionRef.get();
+    const content = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    return content;
+  } catch (error) {
+    console.error(`Failed to fetch content for user ${userId}:`, error);
+    throw error;
+  }
 }
